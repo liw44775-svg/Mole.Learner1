@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>地鼠挑战 - 图片位置修正版</title>
+    <style>
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        html, body { 
+            margin: 0; padding: 0; width: 100%; height: 100%; 
+            overflow: hidden; position: fixed; background: #2c3e50;
+            font-family: 'PingFang SC', sans-serif;
+        }
+        #game-wrapper { position: relative; width: 100vw; height: 100dvh; display: flex; flex-direction: column; }
+        #ui { 
+            position: absolute; top: 0; width: 100%; height: 70px;
+            display: flex; justify-content: space-around; align-items: center;
+            color: white; background: rgba(0,0,0,0.6); z-index: 10; font-size: 22px; font-weight: bold;
+        }
+        canvas { display: block; width: 100%; height: 100%; background: #8bc34a; }
+        #overlay { 
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+            background: rgba(255,255,255,0.98); padding: 40px; border-radius: 30px; 
+            text-align: center; z-index: 100; width: 90%; max-width: 450px;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.4); border: 6px solid #ff9800;
+        }
+        .btn { 
+            width: 100%; padding: 20px; font-size: 24px; border-radius: 60px; 
+            background: #ff9800; color: white; border: none; cursor: pointer;
+            font-weight: bold; box-shadow: 0 6px 0 #e68a00; margin-top: 25px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-wrapper">
+    <audio id="bgm" src="bgm.mp3" loop></audio>
+    <audio id="hitSound" src="hit.mp3"></audio>
+    <audio id="tauntSound" src="taunt.mp3"></audio>
+
+    <div id="ui">
+        <div>关卡: <span id="level">1</span></div>
+        <div>得分: <span id="score">0</span> / <span id="target">30</span></div>
+        <div>时间: <span id="timer">45</span></div>
+    </div>
+
+    <div id="overlay">
+        <h2 id="title">地鼠挑战赛</h2>
+        <p id="desc">图片位置已整体下移修正</p>
+        <button class="btn" onclick="startLevel()">开始游戏</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const timerEl = document.getElementById('timer');
+    const levelEl = document.getElementById('level');
+    const targetEl = document.getElementById('target');
+    const overlay = document.getElementById('overlay');
+
+    let score = 0, timeLeft = 45, currentLevel = 1, gameActive = false;
+    let moles = [], lastSpawnTime = 0, timerInterval = null;
+
+    const audioBgm = document.getElementById('bgm');
+    const audioHit = document.getElementById('hitSound');
+    const audioTaunt = document.getElementById('tauntSound');
+    audioBgm.volume = 0.05;
+
+    const imgNormal = new Image(); imgNormal.src = 'mole_normal.png';
+    const imgHit = new Image(); imgHit.src = 'mole_hit.png';
+    const imgEscape = new Image(); imgEscape.src = 'mole_escape.png';
+    
+    let useFallback = false;
+    imgNormal.onerror = () => { useFallback = true; };
+
+    const colorNames = {"#F44336":"Red","#4CAF50":"Green","#2196F3":"Blue","#FFEB3B":"Yellow","#9C27B0":"Purple","#FF9800":"Orange"};
+
+    class Mole {
+        constructor(x, y) {
+            this.x = x; this.y = y;
+            this.radius = Math.min(canvas.width, canvas.height) * 0.12;
+            this.active = false;
+            this.state = "hidden"; 
+            this.yOffset = 0; 
+        }
+
+        spawn() {
+            const types = ['num', 'alpha', 'color'];
+            const type = types[Math.floor(Math.random()*3)];
+            this.isColor = type === 'color';
+            this.color = this.isColor ? Object.keys(colorNames)[Math.floor(Math.random()*6)] : "#FFF176";
+            this.content = this.isColor ? "" : "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"[Math.floor(Math.random()*36)];
+            this.active = true;
+            this.state = "rising";
+            this.yOffset = 0;
+            this.startTime = Date.now();
+        }
+
+        update() {
+            if (!this.active) return;
+            const stayTime = Math.max(3500, 7000 - (currentLevel * 400));
+            if (this.state === "rising") {
+                this.yOffset += 3;
+                if (this.yOffset >= 100) this.state = "visible";
+            } else if (this.state === "visible") {
+                if (Date.now() - this.startTime > stayTime) {
+                    this.state = "escape";
+                    try { audioTaunt.play(); } catch(e){}
+                }
+            } else if (this.state === "hit" || this.state === "escape") {
+                this.yOffset -= 6;
+                if (this.yOffset <= 0) { this.active = false; this.state = "hidden"; }
+            }
+        }
+
+        draw() {
+            // 洞口阴影
+            ctx.fillStyle = "rgba(0,0,0,0.3)";
+            ctx.beginPath();
+            ctx.ellipse(this.x, this.y, this.radius, this.radius * 0.4, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            if (this.active) {
+                ctx.save();
+                // 遮罩区域
+                ctx.beginPath();
+                ctx.rect(this.x - this.radius, this.y - this.radius * 2.5, this.radius * 2, this.radius * 2.6);
+                ctx.clip();
+
+                // 【修正】图片底部位置下移 0.4*radius
+                const drawY = this.y - (this.yOffset / 100 * this.radius * 1.4) + (this.radius * 0.4);
+                
+                if (!useFallback) {
+                    let img = imgNormal;
+                    if (this.state === "hit") img = imgHit;
+                    else if (this.state === "escape") img = imgEscape;
+                    // 【修正】drawImage 的 Y 轴增加偏移，让地鼠身体下沉
+                    ctx.drawImage(img, this.x - this.radius, drawY - this.radius * 1.5, this.radius * 2, this.radius * 2);
+                } else {
+                    ctx.fillStyle = "#795548";
+                    ctx.beginPath(); ctx.arc(this.x, drawY, this.radius*0.8, Math.PI, 0); ctx.fill();
+                }
+
+                // 绘制牌子
+                if (this.state !== "escape") {
+                    ctx.fillStyle = this.color;
+                    const pW = this.radius * 1.1, pH = this.radius * 0.6;
+                    // 【修正】牌子位置向下移动 20 像素左右 (radius * 0.2)
+                    const pY = drawY - this.radius * 0.9; 
+                    ctx.fillRect(this.x - pW/2, pY, pW, pH);
+                    ctx.strokeStyle = "#333"; ctx.lineWidth = 2; ctx.strokeRect(this.x - pW/2, pY, pW, pH);
+
+                    if (!this.isColor) {
+                        ctx.fillStyle = "#000";
+                        ctx.font = `bold ${this.radius * 0.45}px Arial`;
+                        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+                        ctx.fillText(this.content, this.x, pY + pH/2);
+                    }
+                }
+                ctx.restore();
+            }
+        }
+    }
+
+    function startLevel() {
+        overlay.style.display = "none";
+        score = 0; timeLeft = 45; gameActive = true;
+        scoreEl.innerText = score; levelEl.innerText = currentLevel;
+        targetEl.innerText = currentLevel * 30;
+        try { audioBgm.play(); } catch(e){}
+        initHoles();
+        if(timerInterval) clearInterval(timerInterval);
+        timerInterval = setInterval(() => {
+            if(!gameActive) return;
+            timeLeft--; timerEl.innerText = timeLeft;
+            if(timeLeft <= 0) endLevel();
+        }, 1000);
+        gameLoop();
+    }
+
+    function endLevel() {
+        gameActive = false; audioBgm.pause();
+        overlay.style.display = "block";
+        if (score >= currentLevel * 30) {
+            document.getElementById('title').innerText = "过关！";
+            currentLevel++;
+        } else {
+            document.getElementById('title').innerText = "失败";
+        }
+    }
+
+    function gameLoop() {
+        if (!gameActive) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#8bc34a"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        const rate = Math.max(2000, 5000 - (currentLevel * 300));
+        if (Date.now() - lastSpawnTime > rate) {
+            const idle = moles.filter(m => !m.active);
+            if (idle.length > 0) idle[Math.floor(Math.random()*idle.length)].spawn();
+            lastSpawnTime = Date.now();
+        }
+
+        moles.forEach(m => { m.update(); m.draw(); });
+        requestAnimationFrame(gameLoop);
+    }
+
+    function handleInput(e) {
+        if (!gameActive) return;
+        const rect = canvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        const x = clientX - rect.left, y = clientY - rect.top;
+
+        moles.forEach(m => {
+            if (m.active && (m.state === "visible" || m.state === "rising")) {
+                // 点击判定中心同步下移
+                const dist = Math.sqrt((x - m.x)**2 + (y - (m.y - m.radius * 0.6))**2);
+                if (dist < m.radius * 1.2) {
+                    m.state = "hit"; score += 10; scoreEl.innerText = score;
+                    try { audioHit.currentTime=0; audioHit.play(); } catch(e){}
+                    speak(m.isColor ? colorNames[m.color] : m.content);
+                }
+            }
+        });
+    }
+
+    function speak(t) {
+        window.speechSynthesis.cancel();
+        const msg = new SpeechSynthesisUtterance(t);
+        msg.lang = 'en-US'; msg.rate = 0.5;
+        window.speechSynthesis.speak(msg);
+    }
+
+    function initHoles() {
+        moles = [];
+        for(let i=0; i<3; i++) {
+            for(let j=0; j<3; j++) {
+                moles.push(new Mole(canvas.width*(i+1)/4, canvas.height*(j+1.2)/4.5));
+            }
+        }
+    }
+
+    window.addEventListener('resize', () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; initHoles(); });
+    canvas.addEventListener('mousedown', handleInput);
+    canvas.addEventListener('touchstart', (e) => { e.preventDefault(); handleInput(e); }, {passive:false});
+    canvas.width = window.innerWidth; canvas.height = window.innerHeight; initHoles();
+</script>
+</body>
+</html>
